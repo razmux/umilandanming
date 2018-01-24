@@ -405,7 +405,6 @@ int intif_saveregistry(struct map_session_data *sd)
 	for( data = iter->first(iter,&key); iter->exists(iter); data = iter->next(iter,&key) ) {
 		const char *varname = NULL;
 		struct script_reg_state *src = NULL;
-		bool lValid = false;
 
 		if( data->type != DB_DATA_PTR ) // it's a @number
 			continue;
@@ -421,17 +420,13 @@ int intif_saveregistry(struct map_session_data *sd)
 			continue;
 
 		src->update = false;
-		lValid = script_check_RegistryVariableLength(0,varname,&len);
-		++len;
 
-		if (!lValid) { //this is sql colum size, must be retrive from config
-			ShowError("intif_saveregistry: Variable name length is too long (aid: %d, cid: %d): '%s' sz=%d\n", sd->status.account_id, sd->status.char_id, varname, len);
-			continue;
-		}
+		len = strlen(varname)+1;
+
 		WFIFOB(inter_fd, plen) = (unsigned char)len; // won't be higher; the column size is 32
 		plen += 1;
 
-		safestrncpy(WFIFOCP(inter_fd,plen), varname, len); //the key
+		safestrncpy(WFIFOCP(inter_fd,plen), varname, len);
 		plen += len;
 
 		WFIFOL(inter_fd, plen) = script_getvaridx(key.i64);
@@ -440,19 +435,13 @@ int intif_saveregistry(struct map_session_data *sd)
 		if( src->type ) {
 			struct script_reg_str *p = (struct script_reg_str *)src;
 
-			WFIFOB(inter_fd, plen) = p->value ? 2 : 3; //var type
+			WFIFOB(inter_fd, plen) = p->value ? 2 : 3;
 			plen += 1;
 
 			if( p->value ) {
-				lValid = script_check_RegistryVariableLength(1,p->value,&len);
-				++len;
-				if ( !lValid ) { // error can't be higher; the column size is 254. (nb the transmission limit with be fixed with protobuf revamp)
-					ShowDebug( "intif_saveregistry: Variable value length is too long (aid: %d, cid: %d): '%s' sz=%d to be saved with current system and will be truncated\n",sd->status.account_id, sd->status.char_id,p->value,len);
-					len = 254;
-					p->value[len - 1] = '\0'; //this is backward for old char-serv but new one doesn't need this
-				}
+				len = strlen(p->value)+1;
 
-				WFIFOB(inter_fd, plen) = (uint8)len; 
+				WFIFOB(inter_fd, plen) = (unsigned char)len; // won't be higher; the column size is 254
 				plen += 1;
 
 				safestrncpy(WFIFOCP(inter_fd,plen), p->value, len);
@@ -3677,7 +3666,7 @@ int intif_parse_clan_onlinecount( int fd ){
  * @return
  *  0 (unknow packet).
  *  1 sucess (no error)
- *  2 invalid length of packet (not enough data yet)
+ *  2 invalid lenght of packet (not enough data yet)
  */
 int intif_parse(int fd)
 {

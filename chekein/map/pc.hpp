@@ -1,6 +1,6 @@
 // Copyright (c) Athena Dev Teams - Licensed under GNU GPL
 // For more information, see LICENCE in the main folder
-#pragma once
+
 #ifndef _PC_HPP_
 #define _PC_HPP_
 
@@ -267,6 +267,10 @@ struct map_session_data {
 		bool keepshop; // Whether shop data should be removed when the player disconnects
 		bool mail_writing; // Whether the player is currently writing a mail in RODEX or not
 		bool cashshop_open;
+		unsigned int view_mob_info : 1;
+		unsigned int bg_listen : 1;
+		unsigned int bg_afk : 1; // Moved here to reduce searchs
+		unsigned int only_walk : 1; // [Zephyrus] Block Skills and Item usage to a player
 	} state;
 	struct {
 		unsigned char no_weapon_damage, no_magic_damage, no_misc_damage;
@@ -498,7 +502,7 @@ struct map_session_data {
 	int itemid;
 	short itemindex;	//Used item's index in sd->inventory [Skotlex]
 
-	uint16 catch_target_class; // pet catching, stores a pet class to catch [zzo]
+	short catch_target_class; // pet catching, stores a pet class to catch (short now) [zzo]
 
 	int8 spiritball, spiritball_old;
 	int spirit_timer[MAX_SPIRITBALL];
@@ -572,8 +576,8 @@ struct map_session_data {
 
 	char fakename[NAME_LENGTH]; // fake names [Valaris]
 
-	size_t duel_group; // duel vars [LuzZza]
-	size_t duel_invite;
+	int duel_group; // duel vars [LuzZza]
+	int duel_invite;
 
 	int killerrid, killedrid;
 
@@ -625,7 +629,11 @@ struct map_session_data {
 	int debug_line;
 	const char* debug_func;
 
+	// Battleground and Queue System
 	unsigned int bg_id;
+	struct battleground_data *bmaster_flag;
+	struct queue_data *qd;
+	unsigned short bg_team;
 
 #ifdef SECURE_NPCTIMEOUT
 	/**
@@ -781,7 +789,6 @@ enum weapon_type {
 	W_DOUBLE_DS, // dagger + sword
 	W_DOUBLE_DA, // dagger + axe
 	W_DOUBLE_SA, // sword + axe
-	MAX_WEAPON_TYPE_ALL,
 };
 
 #define WEAPON_TYPE_ALL ((1<<MAX_WEAPON_TYPE)-1)
@@ -1267,6 +1274,8 @@ extern int day_timer_tid;
 extern int night_timer_tid;
 int map_day_timer(int tid, unsigned int tick, int id, intptr_t data); // by [yor]
 int map_night_timer(int tid, unsigned int tick, int id, intptr_t data); // by [yor]
+
+int pc_update_last_action(struct map_session_data *sd, int type, enum idletime_option idle_option);
 
 // Rental System
 void pc_inventory_rentals(struct map_session_data *sd);

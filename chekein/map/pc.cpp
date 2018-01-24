@@ -166,6 +166,34 @@ int pc_get_group_id(struct map_session_data *sd) {
 int pc_get_group_level(struct map_session_data *sd) {
 	return sd->group_level;
 }
+/***********************************************************
+* Update Idle PC Timer
+* Type
+* 0 = Send By Server
+* 1 = KeyBoard Action
+* 2 = Mouse Click
+* 3 = Both Hands
+***********************************************************/
+int pc_update_last_action(struct map_session_data *sd, int type, enum idletime_option idle_option)
+{
+	struct battleground_data *bg;
+	unsigned int tick = gettick();
+
+	if( !(battle_config.idletime_option&idle_option) )
+		return 1;
+
+	sd->idletime = last_tick;
+
+	if( sd->bg_id && sd->state.bg_afk && (bg = bg_team_search(sd->bg_id)) != NULL && bg->g )
+	{ // Battleground AFK announce
+		char output[128];
+		sprintf(output, "%s : %s is no longer away...", bg->g->name, sd->status.name);
+		clif_bg_message(bg, bg->bg_id, bg->g->name, output, strlen(output) + 1);
+		sd->state.bg_afk = 0;
+	}
+
+	return 1;
+}
 
 static int pc_invincible_timer(int tid, unsigned int tick, int id, intptr_t data)
 {
@@ -738,13 +766,12 @@ int pc_equippoint_sub(struct map_session_data *sd,struct item_data* id){
 		return 0; //Not equippable by players.
 
 	ep = id->equip;
-	if(id->look == W_DAGGER	|| id->look == W_1HSWORD || id->look == W_1HAXE) {
-		if(pc_checkskill(sd,AS_LEFT) > 0 || (sd->class_&MAPID_UPPERMASK) == MAPID_ASSASSIN || (sd->class_&MAPID_UPPERMASK) == MAPID_KAGEROUOBORO) { //Kagerou and Oboro can dual wield daggers. [Rytech]
-			if (ep == EQP_WEAPON)
-				return EQP_ARMS;
-			if (ep == EQP_SHADOW_WEAPON)
-				return EQP_SHADOW_ARMS;
-		}
+	if(id->look == W_DAGGER	||
+		id->look == W_1HSWORD ||
+		id->look == W_1HAXE) {
+		if(ep == EQP_HAND_R && (pc_checkskill(sd,AS_LEFT) > 0 || (sd->class_&MAPID_UPPERMASK) == MAPID_ASSASSIN ||
+			(sd->class_&MAPID_UPPERMASK) == MAPID_KAGEROUOBORO))//Kagerou and Oboro can dual wield daggers. [Rytech]
+			return EQP_ARMS;
 	}
 	return ep;
 }
@@ -1099,10 +1126,6 @@ uint8 pc_isequip(struct map_session_data *sd,int n)
 	if(item->sex != 2 && sd->status.sex != item->sex)
 		return ITEM_EQUIP_ACK_FAIL;
 
-	//fail to equip if item is restricted
-	if (!battle_config.allow_equip_restricted_item && itemdb_isNoEquip(item, sd->bl.m))
-		return ITEM_EQUIP_ACK_FAIL;
-
 	if (sd->sc.count) {
 		if(item->equip & EQP_ARMS && item->type == IT_WEAPON && sd->sc.data[SC_STRIPWEAPON]) // Also works with left-hand weapons [DracoRPG]
 			return ITEM_EQUIP_ACK_FAIL;
@@ -1135,11 +1158,15 @@ uint8 pc_isequip(struct map_session_data *sd,int n)
 		}
 	}
 
-	//Not equipable by class. [Skotlex]
-	if (!(1ULL << (sd->class_&MAPID_BASEMASK)&item->class_base[(sd->class_&JOBL_2_1) ? 1 : ((sd->class_&JOBL_2_2) ? 2 : 0)]))
+	//fail to equip if item is restricted
+	if (!battle_config.allow_equip_restricted_item && itemdb_isNoEquip(item, sd->bl.m))
 		return ITEM_EQUIP_ACK_FAIL;
 
-	if (!pc_isItemClass(sd, item))
+	//Not equipable by class. [Skotlex]
+	if (!(1ULL<<(sd->class_&MAPID_BASEMASK)&item->class_base[(sd->class_&JOBL_2_1)?1:((sd->class_&JOBL_2_2)?2:0)]))
+		return ITEM_EQUIP_ACK_FAIL;
+	
+	if (!pc_isItemClass(sd,item))
 		return ITEM_EQUIP_ACK_FAIL;
 
 	return ITEM_EQUIP_ACK_OK;
@@ -1348,8 +1375,6 @@ bool pc_authok(struct map_session_data *sd, uint32 login_id2, time_t expiration_
 	sd->hatEffectCount = 0;
 #endif
 
-	sd->catch_target_class = PET_CATCH_FAIL;
-
 	// Check EXP overflow, since in previous revision EXP on Max Level can be more than 'official' Max EXP
 	if (pc_is_maxbaselv(sd) && sd->status.base_exp > MAX_LEVEL_BASE_EXP) {
 		sd->status.base_exp = MAX_LEVEL_BASE_EXP;
@@ -1432,6 +1457,8 @@ void pc_reg_received(struct map_session_data *sd)
 	// Cooking Exp
 	sd->cook_mastery = pc_readglobalreg(sd, add_str("COOK_MASTERY"));
 
+	sd->bg_team = pc_readglobalreg(sd,add_str("Bat_Team"));
+	
 	if( (sd->class_&MAPID_BASEMASK) == MAPID_TAEKWON )
 	{ // Better check for class rather than skill to prevent "skill resets" from unsetting this
 		sd->mission_mobid = pc_readglobalreg(sd, add_str("TK_MISSION_ID"));
@@ -1489,6 +1516,7 @@ void pc_reg_received(struct map_session_data *sd)
 		return;
 	sd->state.active = 1;
 	sd->state.pc_loaded = false; // Ensure inventory data and status data is loaded before we calculate player stats
+	sd->state.bg_listen = 1;
 
 	intif_storage_request(sd,TABLE_STORAGE, 0, STOR_MODE_ALL); // Request storage data
 	intif_storage_request(sd,TABLE_CART, 0, STOR_MODE_ALL); // Request cart data
@@ -5023,6 +5051,9 @@ int pc_useitem(struct map_session_data *sd,int n)
 
 	if (item.nameid == 0 || item.amount <= 0)
 		return 0;
+	
+	if( sd->state.only_walk )
+		return 0;
 
 	if( !pc_isUseitem(sd,n) )
 		return 0;
@@ -5062,8 +5093,8 @@ int pc_useitem(struct map_session_data *sd,int n)
 
 	sd->itemid = item.nameid;
 	sd->itemindex = n;
-	if(sd->catch_target_class != PET_CATCH_FAIL) //Abort pet catching.
-		sd->catch_target_class = PET_CATCH_FAIL;
+	if(sd->catch_target_class != -1) //Abort pet catching.
+		sd->catch_target_class = -1;
 
 	amount = item.amount;
 	script = id->script;
@@ -5459,27 +5490,26 @@ enum e_setpos pc_setpos(struct map_session_data* sd, unsigned short mapindex, in
 	sd->state.warping = 1;
 	sd->state.workinprogress = WIP_DISABLE_NONE;
 
+	if(map[sd->bl.m].instance_id && sd->state.changemap && !map[m].instance_id) {
+		bool instance_found = false;
+		struct party_data *p = NULL;
+		struct guild *g = NULL;
+
+		if (sd->instance_id) {
+			instance_delusers(sd->instance_id);
+			instance_found = true;
+		}
+		if (!instance_found && sd->status.party_id && (p = party_search(sd->status.party_id)) != NULL && p->instance_id) {
+			instance_delusers(p->instance_id);
+			instance_found = true;
+		}
+		if (!instance_found && sd->status.guild_id && (g = guild_search(sd->status.guild_id)) != NULL && g->instance_id)
+			instance_delusers(g->instance_id);
+	}
 	if( sd->state.changemap ) { // Misc map-changing settings
 		int i;
-
-		if(map[sd->bl.m].instance_id && !map[m].instance_id) {
-			bool instance_found = false;
-			struct party_data *p = NULL;
-			struct guild *g = NULL;
-
-			if (sd->instance_id) {
-				instance_delusers(sd->instance_id);
-				instance_found = true;
-			}
-			if (!instance_found && sd->status.party_id && (p = party_search(sd->status.party_id)) != NULL && p->instance_id) {
-				instance_delusers(p->instance_id);
-				instance_found = true;
-			}
-			if (!instance_found && sd->status.guild_id && (g = guild_search(sd->status.guild_id)) != NULL && g->instance_id)
-				instance_delusers(g->instance_id);
-		}
-
 		sd->state.pmap = sd->bl.m;
+		sd->state.only_walk = 0;
 		if (sd->sc.count) { // Cancel some map related stuff.
 			if (sd->sc.data[SC_JAILED])
 				return SETPOS_MAPINDEX; //You may not get out!
@@ -5509,6 +5539,8 @@ enum e_setpos pc_setpos(struct map_session_data* sd, unsigned short mapindex, in
 		party_send_dot_remove(sd); //minimap dot fix [Kevin]
 		guild_send_dot_remove(sd);
 		bg_send_dot_remove(sd);
+		if( battle_config.bg_queue_onlytowns && sd->qd && map[sd->bl.m].flag.town && !map[m].flag.town )
+			queue_leaveall(sd);
 		if (sd->regen.state.gc)
 			sd->regen.state.gc = 0;
 		// make sure vending is allowed here
@@ -9186,6 +9218,9 @@ int pc_setregistry(struct map_session_data *sd, int64 reg, int val)
 			} else if( !strcmp(regname,"COOK_MASTERY") && sd->cook_mastery != val ) {
 				val = cap_value(val, 0, 1999);
 				sd->cook_mastery = val;
+			} else if( !strcmp(regname,"Bat_Team") && sd->bg_team != val ) {
+				val = cap_value(val, 0, 2);
+				sd->bg_team = val;
 			}
 			break;
 		case '#':
@@ -9251,16 +9286,9 @@ int pc_setregistry_str(struct map_session_data *sd, int64 reg, const char *val)
 	struct script_reg_str *p = NULL;
 	const char *regname = get_str(script_getvarid(reg));
 	unsigned int index = script_getvaridx(reg);
-	size_t vlen = 0;
 
 	if (!reg_load && !sd->vars_ok) {
 		ShowError("pc_setregistry_str : refusing to set %s until vars are received.\n", regname);
-		return 0;
-	}
-
-	if ( !script_check_RegistryVariableLength(1, val, &vlen ) )
-	{
-		ShowError("pc_check_RegistryVariableLength: Variable value length is too long (aid: %d, cid: %d): '%s' sz=%zu\n", sd->status.account_id, sd->status.char_id, val, vlen);
 		return 0;
 	}
 
@@ -9790,21 +9818,16 @@ bool pc_equipitem(struct map_session_data *sd,short n,int req_pos)
 			pos = sd->equip_index[EQI_ACC_R] >= 0 ? EQP_ACC_L : EQP_ACC_R;
 	}
 
-	if(pos == EQP_ARMS && id->equip == EQP_HAND_R) { //Dual wield capable weapon.
-		pos = (req_pos&EQP_ARMS);
-		if (pos == EQP_ARMS) //User specified both slots, pick one for them.
-			pos = sd->equip_index[EQI_HAND_R] >= 0 ? EQP_HAND_L : EQP_HAND_R;
-	}
-
 	if(pos == EQP_SHADOW_ACC) { // Shadow System
 		pos = req_pos&EQP_SHADOW_ACC;
 		if (pos == EQP_SHADOW_ACC)
 			pos = sd->equip_index[EQI_SHADOW_ACC_L] >= 0 ? EQP_SHADOW_ACC_R : EQP_SHADOW_ACC_L;
 	}
-	if(pos == EQP_SHADOW_ARMS && id->equip == EQP_SHADOW_WEAPON) {
-		pos = (req_pos&EQP_SHADOW_ARMS);
-		if( pos == EQP_SHADOW_ARMS )
-			pos = (sd->equip_index[EQI_SHADOW_WEAPON] >= 0 ? EQP_SHADOW_SHIELD : EQP_SHADOW_WEAPON);
+
+	if(pos == EQP_ARMS && id->equip == EQP_HAND_R) { //Dual wield capable weapon.
+		pos = (req_pos&EQP_ARMS);
+		if (pos == EQP_ARMS) //User specified both slots, pick one for them.
+			pos = sd->equip_index[EQI_HAND_R] >= 0 ? EQP_HAND_L : EQP_HAND_R;
 	}
 
 	if (pos&EQP_HAND_R && battle_config.use_weapon_skill_range&BL_PC) {
@@ -9873,7 +9896,7 @@ bool pc_equipitem(struct map_session_data *sd,short n,int req_pos)
 	if(itemdb_isspecial(sd->inventory.u.items_inventory[n].card[0]))
 		; //No cards
 	else {
-		for( i = 0; i < MAX_SLOTS; i++ ) {
+		for( i = 0; i < id->slot; i++ ) {
 			struct item_data *data;
 			if (!sd->inventory.u.items_inventory[n].card[i])
 				continue;
@@ -9896,7 +9919,7 @@ bool pc_equipitem(struct map_session_data *sd,short n,int req_pos)
 		if(itemdb_isspecial(sd->inventory.u.items_inventory[n].card[0]))
 			; //No cards
 		else {
-			for( i = 0; i < MAX_SLOTS; i++ ) {
+			for( i = 0; i < id->slot; i++ ) {
 				struct item_data *data;
 				if (!sd->inventory.u.items_inventory[n].card[i])
 					continue;
@@ -9922,7 +9945,7 @@ bool pc_equipitem(struct map_session_data *sd,short n,int req_pos)
  *------------------------------------------*/
 bool pc_unequipitem(struct map_session_data *sd, int n, int flag) {
 	int i, iflag;
-	bool status_calc = false;
+	bool status_cacl = false;
 
 	nullpo_retr(false,sd);
 
@@ -10010,12 +10033,11 @@ bool pc_unequipitem(struct map_session_data *sd, int n, int flag) {
 	if ( sd->inventory_data[n] ) {
 		if( sd->inventory_data[n]->combos_count ) {
 			if( pc_removecombo(sd,sd->inventory_data[n]) )
-				status_calc = true;
-		}
-		if(itemdb_isspecial(sd->inventory.u.items_inventory[n].card[0]))
+				status_cacl = true;
+		} if(itemdb_isspecial(sd->inventory.u.items_inventory[n].card[0]))
 			; //No cards
 		else {
-			for( i = 0; i < MAX_SLOTS; i++ ) {
+			for( i = 0; i < sd->inventory_data[n]->slot; i++ ) {
 				struct item_data *data;
 
 				if (!sd->inventory.u.items_inventory[n].card[i])
@@ -10023,14 +10045,14 @@ bool pc_unequipitem(struct map_session_data *sd, int n, int flag) {
 				if ( ( data = itemdb_exists(sd->inventory.u.items_inventory[n].card[i]) ) != NULL ) {
 					if( data->combos_count ) {
 						if( pc_removecombo(sd,data) )
-							status_calc = true;
+							status_cacl = true;
 					}
 				}
 			}
 		}
 	}
 
-	if(flag&1 || status_calc) {
+	if(flag&1 || status_cacl) {
 		pc_checkallowskill(sd);
 		status_calc_pc(sd,SCO_NONE);
 	}
@@ -10045,7 +10067,7 @@ bool pc_unequipitem(struct map_session_data *sd, int n, int flag) {
 		if(itemdb_isspecial(sd->inventory.u.items_inventory[n].card[0]))
 			; //No cards
 		else {
-			for( i = 0; i < MAX_SLOTS; i++ ) {
+			for( i = 0; i < sd->inventory_data[n]->slot; i++ ) {
 				struct item_data *data;
 				if (!sd->inventory.u.items_inventory[n].card[i])
 					continue;
@@ -12266,8 +12288,6 @@ void pc_show_questinfo(struct map_session_data *sd) {
 		return;
 	if (!map[sd->bl.m].qi_count || !map[sd->bl.m].qi_data)
 		return;
-	if (map[sd->bl.m].qi_count != sd->qi_count)
-		return; // init was not called yet
 
 	for(i = 0; i < map[sd->bl.m].qi_count; i++) {
 		qi = &map[sd->bl.m].qi_data[i];

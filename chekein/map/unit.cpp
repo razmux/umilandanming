@@ -406,6 +406,7 @@ static int unit_walktoxy_timer(int tid, unsigned int tick, int id, intptr_t data
 	y += dy;
 	map_moveblock(bl, x, y, tick);
 	ud->walk_count++; // Walked cell counter, to be used for walk-triggered skills. [Skotlex]
+	status_change_end(bl, SC_ROLLINGCUTTER, INVALID_TIMER); // If you move, you lose your counters. [malufett]
 
 	if (bl->x != x || bl->y != y || ud->walktimer != INVALID_TIMER)
 		return 0; // map_moveblock has altered the object beyond what we expected (moved/warped it)
@@ -1906,7 +1907,7 @@ int unit_skilluse_id2(struct block_list *src, int target_id, uint16 skill_id, ui
 		ud->skilltimer = add_timer( tick+casttime, skill_castend_id, src->id, 0 );
 
 		if( sd && (pc_checkskill(sd,SA_FREECAST) > 0 || skill_id == LG_EXEEDBREAK) )
-			status_calc_bl(&sd->bl, SCB_SPEED|SCB_ASPD);
+			status_calc_bl(&sd->bl, SCB_SPEED);
 	} else
 		skill_castend_id(ud->skilltimer,tick,src->id,0);
 
@@ -2086,7 +2087,7 @@ int unit_skilluse_pos2( struct block_list *src, short skill_x, short skill_y, ui
 		ud->skilltimer = add_timer( tick+casttime, skill_castend_pos, src->id, 0 );
 
 		if( (sd && pc_checkskill(sd,SA_FREECAST) > 0) || skill_id == LG_EXEEDBREAK)
-			status_calc_bl(&sd->bl, SCB_SPEED|SCB_ASPD);
+			status_calc_bl(&sd->bl, SCB_SPEED);
 	} else {
 		ud->skilltimer = INVALID_TIMER;
 		skill_castend_pos(ud->skilltimer,tick,src->id,0);
@@ -2526,6 +2527,10 @@ static int unit_attack_timer_sub(struct block_list* src, int tid, unsigned int t
 
 	if( ud->skilltimer != INVALID_TIMER && !(sd && pc_checkskill(sd,SA_FREECAST) > 0) )
 		return 0; // Can't attack while casting
+	
+	if( sd && map[src->m].flag.battleground )
+		pc_update_last_action(sd,0,IDLE_ATTACK);
+
 
 	if( !battle_config.sdelay_attack_enable && DIFF_TICK(ud->canact_tick,tick) > 0 && !(sd && pc_checkskill(sd,SA_FREECAST) > 0) ) {
 		// Attacking when under cast delay has restrictions:
@@ -2711,7 +2716,7 @@ int unit_skillcastcancel(struct block_list *bl, char type)
 	ud->skilltimer = INVALID_TIMER;
 
 	if( sd && (pc_checkskill(sd,SA_FREECAST) > 0 || skill_id == LG_EXEEDBREAK) )
-		status_calc_bl(&sd->bl, SCB_SPEED|SCB_ASPD);
+		status_calc_bl(&sd->bl, SCB_SPEED);
 
 	if( sd ) {
 		switch( skill_id ) {
@@ -2875,6 +2880,11 @@ int unit_remove_map_(struct block_list *bl, clr_type clrtype, const char* file, 
 		status_change_end(bl, SC_VACUUM_EXTREME, INVALID_TIMER);
 		status_change_end(bl, SC_CURSEDCIRCLE_ATKER, INVALID_TIMER); // callme before warp
 		status_change_end(bl, SC_SUHIDE, INVALID_TIMER);
+	}
+
+	if (bl->type&(BL_CHAR|BL_PET)) {
+		skill_unit_move(bl,gettick(),4);
+		skill_cleartimerskill(bl);
 	}
 
 	switch( bl->type ) {
@@ -3060,10 +3070,6 @@ int unit_remove_map_(struct block_list *bl, clr_type clrtype, const char* file, 
 			break;// do nothing
 	}
 
-	if (bl->type&(BL_CHAR|BL_PET)) {
-		skill_unit_move(bl,gettick(),4);
-		skill_cleartimerskill(bl);
-	}
 	// /BL_MOB is handled by mob_dead unless the monster is not dead.
 	if( bl->type != BL_MOB || !status_isdead(bl) )
 		clif_clearunit_area(bl,clrtype);
@@ -3171,6 +3177,8 @@ int unit_free(struct block_list *bl, clr_type clrtype)
 			guild_send_memberinfoshort(sd,0);
 			pc_cleareventtimer(sd);
 			pc_inventory_rental_clear(sd);
+			if( sd->qd ) queue_leaveall(sd);
+			
 			pc_delspiritball(sd, sd->spiritball, 1);
 			pc_delspiritcharm(sd, sd->spiritcharm, sd->spiritcharm_type);
 

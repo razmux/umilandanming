@@ -9,10 +9,7 @@
  **/
 
 #ifndef PACKETVER
-	/// Do NOT edit this line! To set your client version, please do this instead:
-	/// In Windows: Add this line in your src\custom\defines_pre.h file: #define PACKETVER YYYYMMDD
-	/// In Linux: The same as above or run the following command: ./configure --enable-packetver=YYYYMMDD
-	#define PACKETVER 20151104
+	#define PACKETVER 20150513
 #endif
 
 #ifndef PACKETVER_RE
@@ -26,7 +23,7 @@
 	/// Comment to disable the official packet obfuscation support.
 	/// This requires PACKETVER 2011-08-17 or newer.
 	#ifndef PACKET_OBFUSCATION
-		#define PACKET_OBFUSCATION
+		//#define PACKET_OBFUSCATION
 
 		// Define these inside src/custom/defines_pre.h or src/custom/defines_post.h
 		//#define PACKET_OBFUSCATION_KEY1 <key1>

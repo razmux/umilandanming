@@ -16,7 +16,6 @@
 #include "../common/socket.h"
 #include "../common/strlib.h"
 #include "../common/utils.h"
-#include "../common/utilities.hpp"
 #include "../common/conf.h"
 
 #include "map.hpp"
@@ -48,6 +47,7 @@
 #include "mob.hpp"
 #include "achievement.hpp"
 #include "clan.hpp"
+#include "battleground.hpp"
 
 #define ATCOMMAND_LENGTH 50
 #define ACMD_FUNC(x) static int atcommand_ ## x (const int fd, struct map_session_data* sd, const char* command, const char* message)
@@ -514,7 +514,7 @@ ACMD_FUNC(where)
 	nullpo_retr(-1, sd);
 	memset(atcmd_player_name, '\0', sizeof atcmd_player_name);
 
-	if (!message || !*message || sscanf(message, "%23[^\n]", atcmd_player_name) < 1) {
+	if (!message || !*message || sscanf(message, "%23s[^\n]", atcmd_player_name) < 1) {
 		clif_displaymessage(fd, msg_txt(sd,910)); // Please enter a player name (usage: @where <char name>).
 		return -1;
 	}
@@ -1767,7 +1767,13 @@ ACMD_FUNC(bodystyle)
 
 	memset(atcmd_output, '\0', sizeof(atcmd_output));
 
-	if (!(sd->class_&JOBL_THIRD)) {
+	// Limit body styles to certain jobs since not all of them are released yet.
+	if (!((sd->class_&MAPID_THIRDMASK) == MAPID_GUILLOTINE_CROSS || (sd->class_&MAPID_THIRDMASK) == MAPID_GENETIC
+		|| (sd->class_&MAPID_THIRDMASK) == MAPID_MECHANIC || (sd->class_&MAPID_THIRDMASK) == MAPID_ROYAL_GUARD
+		|| (sd->class_&MAPID_THIRDMASK) == MAPID_ARCH_BISHOP || (sd->class_&MAPID_THIRDMASK) == MAPID_RANGER
+		|| (sd->class_&MAPID_THIRDMASK) == MAPID_WARLOCK || (sd->class_&MAPID_THIRDMASK) == MAPID_SHADOW_CHASER
+	    || (sd->class_&MAPID_THIRDMASK) == MAPID_MINSTRELWANDERER || (sd->class_&MAPID_THIRDMASK) == MAPID_SORCERER
+		|| (sd->class_&MAPID_THIRDMASK) == MAPID_SURA)) {
 		clif_displaymessage(fd, msg_txt(sd,740));	// This job has no alternate body styles.
 		return -1;
 	}
@@ -2751,9 +2757,7 @@ ACMD_FUNC(guildlevelup) {
  *------------------------------------------*/
 ACMD_FUNC(makeegg) {
 	struct item_data *item_data;
-	int id;
-	struct s_pet_db* pet;
-
+	int id, pet_id;
 	nullpo_retr(-1, sd);
 
 	if (!message || !*message) {
@@ -2769,12 +2773,12 @@ ACMD_FUNC(makeegg) {
 	else
 		id = atoi(message);
 
-	pet = pet_db(id);
-	if (!pet)
-		pet = pet_db_search(id, PET_EGG);
-	if (pet != nullptr) {
-		sd->catch_target_class = pet->class_;
-		intif_create_pet(sd->status.account_id, sd->status.char_id, pet->class_, mob_db(pet->class_)->lv, pet->EggID, 0, pet->intimate, 100, 0, 1, pet->jname);
+	pet_id = search_petDB_index(id, PET_CLASS);
+	if (pet_id < 0)
+		pet_id = search_petDB_index(id, PET_EGG);
+	if (pet_id >= 0) {
+		sd->catch_target_class = pet_db[pet_id].class_;
+		intif_create_pet(sd->status.account_id, sd->status.char_id, pet_db[pet_id].class_, mob_db(pet_db[pet_id].class_)->lv, pet_db[pet_id].EggID, 0, pet_db[pet_id].intimate, 100, 0, 1, pet_db[pet_id].jname);
 	} else {
 		clif_displaymessage(fd, msg_txt(sd,180)); // The monster/egg name/id doesn't exist.
 		return -1;
@@ -3592,6 +3596,218 @@ ACMD_FUNC(agitend3)
 		return -1;
 	}
 }
+
+/**
+ * BATTLEGROUND
+ */
+ACMD_FUNC(bgstart) {
+	
+	nullpo_retr(-1, sd);
+	
+	if (bg_flag) {
+		clif_displaymessage(fd, "Battleground is currently in progress.");
+		return -1;
+	}
+
+	bg_flag = true;
+	bg_start();
+	clif_displaymessage(fd, "Battleground has been initiated");
+
+	return 0;
+}
+
+ACMD_FUNC(bgend) {
+	
+	nullpo_retr(-1, sd);
+	
+	if (!bg_flag) {
+		clif_displaymessage(fd, "Battleground is currently not in progress.");
+		return -1;
+	}
+
+	bg_flag = false;
+	bg_end();
+	clif_displaymessage(fd, "Battleground has been ended.");
+
+	return 0;
+}
+
+ACMD_FUNC(listenbg)
+{
+	sd->state.bg_listen = (sd->state.bg_listen == 0);
+	
+	if( sd->state.bg_listen )
+		clif_displaymessage(fd, "You will receive Battleground announcements.");
+	else
+		clif_displaymessage(fd, "You will not receive Battleground announcements.");
+
+	return 0;
+}
+
+ACMD_FUNC(order)
+{
+	nullpo_retr(-1,sd);
+	if( !message || !*message )
+	{
+		clif_displaymessage(fd, "Please, enter a message (usage: @order <message>).");
+		return -1;
+	}
+
+	if( map[sd->bl.m].flag.battleground )
+	{
+		if( !sd->bmaster_flag )
+		{
+			clif_displaymessage(fd, "This command is reserved for Team Leaders Only.");
+			return -1;
+		}
+		clif_broadcast2(&sd->bl, message, (int)strlen(message)+1, sd->bmaster_flag->color, 0x190, 20, 0, 0, BG);
+	}
+	else
+	{
+		if( !sd->state.gmaster_flag )
+		{
+			clif_displaymessage(fd, "This command is reserved for Guild Leaders Only.");
+			return -1;
+		}
+		clif_broadcast2(&sd->bl, message, (int)strlen(message)+1, 0xFF0000, 0x190, 20, 0, 0, GUILD);
+	}
+
+	return 0;
+}
+ACMD_FUNC(leader)
+{
+	struct map_session_data *pl_sd;
+	nullpo_retr(-1,sd);
+	if( !sd->bmaster_flag )
+		clif_displaymessage(fd, "This command is reserved for Team Leaders Only.");
+	else if( sd->ud.skilltimer != INVALID_TIMER )
+		clif_displaymessage(fd, "Command not allow while casting a skill.");
+	else if( !message || !*message )
+		clif_displaymessage(fd, "Please, enter the new Leader name (usage: @leader <name>).");
+	else if( (pl_sd = map_nick2sd((char *)message,false)) == NULL )
+		clif_displaymessage(fd, msg_txt(sd,3)); // Character not found.
+	else if( sd->bg_id != pl_sd->bg_id )
+		clif_displaymessage(fd, "Destination Player is not in your Team.");
+	else if( sd == pl_sd )
+		clif_displaymessage(fd, "You are already the Team Leader.");
+	else
+	{ // Everytest OK!
+		sprintf(atcmd_output, "Team Leader transfered to [%s]", pl_sd->status.name);
+		clif_broadcast2(&sd->bl, atcmd_output, (int)strlen(atcmd_output)+1, sd->bmaster_flag->color, 0x190, 20, 0, 0, BG);
+
+		sd->bmaster_flag->leader_char_id = pl_sd->status.char_id;
+		pl_sd->bmaster_flag = sd->bmaster_flag;
+		sd->bmaster_flag = NULL;
+
+		clif_name_area(&sd->bl);
+		clif_name_area(&pl_sd->bl);
+		return 0;
+	}
+	return -1;
+}
+
+ACMD_FUNC(reportafk)
+{
+	struct map_session_data *pl_sd;
+	nullpo_retr(-1,sd);
+	if( !sd->bg_id )
+		clif_displaymessage(fd, "This command is reserved for Battleground Only.");
+	else if( !sd->bmaster_flag && battle_config.bg_reportafk_leaderonly )
+		clif_displaymessage(fd, "This command is reserved for Team Leaders Only.");
+	else if( !message || !*message )
+		clif_displaymessage(fd, "Please, enter the character name (usage: @reportafk <name>).");
+	else if( (pl_sd = map_nick2sd((char *)message,false)) == NULL )
+		clif_displaymessage(fd, msg_txt(sd,3)); // Character not found.
+	else if( sd->bg_id != pl_sd->bg_id )
+		clif_displaymessage(fd, "Destination Player is not in your Team.");
+	else if( sd == pl_sd )
+		clif_displaymessage(fd, "You cannot kick yourself.");
+	else if( pl_sd->state.bg_afk == 0 )
+		clif_displaymessage(fd, "The player is not AFK on this Battleground.");
+	else
+	{ // Everytest OK!
+		struct battleground_data *bg;
+		if( (bg = bg_team_search(sd->bg_id)) == NULL )
+			return -1;
+
+		bg_team_leave(pl_sd,2);
+		clif_displaymessage(pl_sd->fd, "You have been kicked from Battleground because of your AFK status.");
+		pc_setpos(pl_sd,pl_sd->status.save_point.map,pl_sd->status.save_point.x,pl_sd->status.save_point.y,CLR_OUTSIGHT);
+		clif_refresh(pl_sd);
+
+		sprintf(atcmd_output, "- AFK [%s] Kicked -", pl_sd->status.name);
+		clif_broadcast2(&sd->bl, atcmd_output, (int)strlen(atcmd_output)+1, bg->color, 0x190, 20, 0, 0, BG);
+		return 0;
+	}
+	return -1;
+}
+/*==========================================
+ * Guild Skill Usage for Guild Masters
+ *------------------------------------------*/
+ACMD_FUNC(guildskill)
+{
+	int i, skillnum = 0, skilllv = 0;
+	unsigned int tick = gettick();
+
+	const struct { char skillstr[3]; int id; } skills[] = {
+		{ "BO",	10010 },
+		{ "RG",	10011 },
+		{ "RS",	10012 },
+		{ "EC",	10013 },
+	};
+
+	// Check for Skill ID
+	for( i = 0; i < ARRAYLENGTH(skills); i++ )
+	{
+		if( strncmpi(message, skills[i].skillstr, 3) == 0 )
+		{
+			skillnum = skills[i].id;
+			break;
+		}
+	}
+	if( !skillnum )
+	{
+		clif_displaymessage(fd, "Invalid Skill string. Use @guildskill EC/RS/RG/BO");
+		return -1;
+	}
+
+	if( !map[sd->bl.m].flag.battleground ) {
+		if( sd->state.gmaster_flag )
+			skilllv = guild_checkskill(sd->guild, skillnum);
+		else {
+			clif_displaymessage(fd, "This command is reserved for Guild Leaders Only.");
+			return -1;
+		}
+	} else {
+		struct battleground_data *bg;
+		if( (bg = sd->bmaster_flag) != NULL )
+			skilllv = bg_checkskill(bg, skillnum);
+		else {
+			clif_displaymessage(fd, "This command is reserved for Team Leaders Only.");
+			return -1;
+		}
+	}
+
+	if( pc_cant_act(sd) || pc_issit(sd) || skill_isNotOk(skillnum, sd) || sd->ud.skilltimer != -1 || sd->sc.option&(OPTION_WEDDING|OPTION_XMAS|OPTION_SUMMER) || sd->state.only_walk || sd->sc.data[SC_BASILICA] )
+		return -1;
+
+	if( DIFF_TICK(tick, sd->ud.canact_tick) < 0 )
+		return -1;
+
+	if( sd->menuskill_id )
+	{
+		if( sd->menuskill_id == SA_TAMINGMONSTER )
+			sd->menuskill_id = sd->menuskill_val = 0; //Cancel pet capture.
+		else if( sd->menuskill_id != SA_AUTOSPELL )
+			return -1; //Can't use skills while a menu is open.
+	}
+
+	sd->skillitem = sd->skillitemlv = 0;
+	if( skilllv ) unit_skilluse_id(&sd->bl, sd->bl.id, skillnum, skilllv);
+	return 0;
+}
+
+
 
 /*==========================================
  * @mapexit - shuts down the map server
@@ -5390,7 +5606,7 @@ ACMD_FUNC(skilloff)
  *------------------------------------------*/
 ACMD_FUNC(npcmove)
 {
-	short x = 0, y = 0;
+	short x = 0, y = 0, m;
 	struct npc_data *nd = 0;
 	char npc_name[NPC_NAME_LENGTH];
 
@@ -5408,12 +5624,18 @@ ACMD_FUNC(npcmove)
 		return -1;
 	}
 
-	if ( npc_movenpc( nd, x, y ) ) 
-	{ //actually failed to move
+	if ((m=nd->bl.m) < 0 || nd->bl.prev == NULL)
+	{
 		clif_displaymessage(fd, msg_txt(sd,1154)); // NPC is not on this map.
 		return -1;	//Not on a map.
-	} else
-		clif_displaymessage(fd, msg_txt(sd,1155)); // NPC moved
+	}
+
+	x = cap_value(x, 0, map[m].xs-1);
+	y = cap_value(y, 0, map[m].ys-1);
+	map_foreachinallrange(clif_outsight, &nd->bl, AREA_SIZE, BL_PC, &nd->bl);
+	map_moveblock(&nd->bl, x, y, gettick());
+	map_foreachinallrange(clif_insight, &nd->bl, AREA_SIZE, BL_PC, &nd->bl);
+	clif_displaymessage(fd, msg_txt(sd,1155)); // NPC moved.
 
 	return 0;
 }
@@ -6547,13 +6769,14 @@ ACMD_FUNC(mobsearch)
 
 	if ((mob_id = atoi(mob_name)) == 0)
 		 mob_id = mobdb_searchname(mob_name);
-	if( mobdb_checkid(mob_id) == 0){
+	if(mob_id > 0 && mobdb_checkid(mob_id) == 0){
 		snprintf(atcmd_output, sizeof atcmd_output, msg_txt(sd,1219),mob_name); // Invalid mob ID %s!
 		clif_displaymessage(fd, atcmd_output);
 		return -1;
 	}
-	strcpy(mob_name,mob_db(mob_id)->jname);	// --ja--
-//	strcpy(mob_name,mob_db(mob_id)->name);	// --en--
+	if(mob_id == atoi(mob_name) && mob_db(mob_id)->jname)
+				strcpy(mob_name,mob_db(mob_id)->jname);	// --ja--
+//				strcpy(mob_name,mob_db(mob_id)->name);	// --en--
 
 	snprintf(atcmd_output, sizeof atcmd_output, msg_txt(sd,1220), mob_name, mapindex_id2name(sd->mapindex)); // Mob Search... %s %s
 	clif_displaymessage(fd, atcmd_output);
@@ -6567,7 +6790,7 @@ ACMD_FUNC(mobsearch)
 
 		if( md->bl.m != sd->bl.m )
 			continue;
-		if( md->mob_id != mob_id )
+		if( mob_id != -1 && md->mob_id != mob_id )
 			continue;
 
 		++number;
@@ -8297,12 +8520,14 @@ ACMD_FUNC(invite)
 		return -1;
 	}
 
-	if(did == 0 || !duel_exist(did) ) {
+	if(did == 0) {
 		clif_displaymessage(fd, msg_txt(sd,350)); // "Duel: @invite without @duel."
 		return 0;
 	}
 
-	if( !duel_check_player_limit( duel_get_duelid(did) ) ){
+	if(duel_list[did].max_players_limit > 0 &&
+		duel_list[did].members_count >= duel_list[did].max_players_limit) {
+
 		clif_displaymessage(fd, msg_txt(sd,351)); // "Duel: Limit of players is reached."
 		return 0;
 	}
@@ -8414,12 +8639,12 @@ ACMD_FUNC(accept)
 		return 0;
 	}
 
-	if(sd->duel_invite <= 0 || !duel_exist(sd->duel_invite) ) {
+	if(sd->duel_invite <= 0) {
 		clif_displaymessage(fd, msg_txt(sd,360)); // "Duel: @accept without invititation."
 		return 0;
 	}
 
-	if( !duel_check_player_limit( duel_get_duelid( sd->duel_invite ) ) )
+	if( duel_list[sd->duel_invite].max_players_limit > 0 && duel_list[sd->duel_invite].members_count >= duel_list[sd->duel_invite].max_players_limit )
 	{
 		clif_displaymessage(fd, msg_txt(sd,351)); // "Duel: Limit of players is reached."
 		return 0;
@@ -10282,6 +10507,13 @@ void atcommand_basecommands(void) {
 		ACMD_DEF(adopt),
 		ACMD_DEF(agitstart3),
 		ACMD_DEF(agitend3),
+		ACMD_DEF(bgstart),
+		ACMD_DEF(bgend),
+		ACMD_DEF(guildskill),
+		ACMD_DEF(listenbg),
+		ACMD_DEF(order),
+		ACMD_DEF(leader),
+		ACMD_DEF(reportafk),
 	};
 	AtCommandInfo* atcommand;
 	int i;
